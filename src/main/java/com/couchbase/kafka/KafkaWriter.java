@@ -22,6 +22,8 @@
 
 package com.couchbase.kafka;
 
+import com.couchbase.client.core.message.dcp.DCPMessage;
+import com.couchbase.client.core.message.dcp.MutationMessage;
 import com.couchbase.client.deps.com.lmax.disruptor.EventHandler;
 import com.couchbase.kafka.filter.Filter;
 import kafka.javaapi.producer.Producer;
@@ -41,12 +43,24 @@ public class KafkaWriter implements EventHandler<DCPEvent> {
     /**
      * Creates a new {@link KafkaWriter}.
      *
-     * @param topic the topic, where events should be published.
-     * @param producer the kafka producer object.
-     * @param filter the filter to select events to publish.
+     * @param environment the environment object, which carries settings.
+     * @param producer    the kafka producer object.
+     * @param filter      the filter to select events to publish.
      */
-    public KafkaWriter(final String topic, final Producer<String, DCPEvent> producer, final Filter filter) {
-        this.topic = topic;
+    public KafkaWriter(final CouchbaseKafkaEnvironment environment, final Producer<String, DCPEvent> producer, final Filter filter) {
+        this(environment.kafkaTopic(), environment, producer, filter);
+    }
+
+    /**
+     * Creates a new {@link KafkaWriter}.
+     *
+     * @param kafkaTopic  name of Kafka topic to override {@link CouchbaseKafkaEnvironment#kafkaTopic()}.
+     * @param environment the environment object, which carries settings.
+     * @param producer    the kafka producer object.
+     * @param filter      the filter to select events to publish.
+     */
+    public KafkaWriter(final String kafkaTopic, final CouchbaseKafkaEnvironment environment, final Producer<String, DCPEvent> producer, final Filter filter) {
+        this.topic = kafkaTopic;
         this.producer = producer;
         this.filter = filter;
     }
@@ -56,10 +70,20 @@ public class KafkaWriter implements EventHandler<DCPEvent> {
      */
     @Override
     public void onEvent(final DCPEvent event, final long sequence, final boolean endOfBatch) throws Exception {
-        if (filter.pass(event)) {
-            KeyedMessage<String, DCPEvent> payload =
-                    new KeyedMessage<String, DCPEvent>(topic, event.key(), event);
-            producer.send(payload);
+        try {
+            if (filter.pass(event)) {
+                KeyedMessage<String, DCPEvent> payload =
+                        new KeyedMessage<String, DCPEvent>(topic, event.key(), event);
+                producer.send(payload);
+            }
+        } finally {
+            if (event.message() instanceof MutationMessage) {
+                MutationMessage mutation = (MutationMessage) event.message();
+                mutation.content().release();
+            }
+            if (event.message() instanceof DCPMessage) {
+                event.connection().consumed((DCPMessage) event.message());
+            }
         }
     }
 }
